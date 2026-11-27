@@ -1,0 +1,4 @@
+/config.json
+/daemon/face_landmarker.task
+/.venv/
+__pycache__/
