@@ -1,5 +1,7 @@
+importScripts("sites.js");
+
 const DEFAULTS = { enabled: true, port: 8765 };
-const SOURCES = new Set(["claude.ai", "chatgpt.com", "chat.openai.com"]);
+const SOURCES = new Set(SUPPORTED_SITES);
 const PING_INTERVAL = 20_000;
 const MAX_RECONNECT_DELAY = 10_000;
 

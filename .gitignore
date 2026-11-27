@@ -2,3 +2,4 @@
 /daemon/face_landmarker.task
 /.venv/
 __pycache__/
+/stats.json

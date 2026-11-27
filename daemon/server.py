@@ -10,7 +10,7 @@ from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
 
 HEARTBEAT_TIMEOUT = 50
-SOURCES = {"claude.ai", "chatgpt.com", "chat.openai.com"}
+SOURCES = {"claude.ai", "chatgpt.com", "chat.openai.com", "gemini.google.com"}
 
 
 def log(message):

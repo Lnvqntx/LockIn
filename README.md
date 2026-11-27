@@ -21,7 +21,7 @@ curl --fail --location \
 ./run.sh
 ```
 
-On the first run, look at your screen during the three-second countdown. LockIn
+On the first run, keep your face visible for the full three-second countdown. LockIn
 averages the yaw and pitch it sees during that time and saves your baseline in
 the repository's `config.json`. Run `.venv/bin/python daemon/vision.py --calibrate` to
 record a new baseline while keeping your current settings. The countdown
@@ -38,7 +38,8 @@ Use `--debug` separately for a video preview.
   the global hotkey.
 - **Recalibrate** pauses monitoring. Look at your screen while the title counts
   down. A tick plays each second and a confirmation sounds when the baseline is
-  saved. Arm again to resume monitoring.
+  saved. If your face disappears, LockIn retries up to three times. With no
+  saved baseline, **Arm** stays disabled until calibration succeeds.
 - **Sensitivity** scales the configured yaw threshold, pitch threshold, and
   grace time by **1.25×** for Low, **1×** for Medium, or **0.75×** for High.
 - **Alert sound** lists supported audio files in `assets/` at startup and
@@ -72,10 +73,26 @@ The script prints yaw and pitch in degrees. Positive yaw means you turned to
 your right, and positive pitch means you looked up. It timestamps transitions
 between `IDLE`, `FOCUSED`, and `ALERTING`. Webcam frames stay in memory.
 
+### Session stats and launch at login
+
+The menu shows today's session count, focus percentage, and alerts. LockIn
+writes completed sessions to local `stats.json`, including start time,
+duration, seconds in `FOCUSED` and `ALERTING`, and the number of times
+`ALERTING` was entered. Today's totals group sessions by their local start
+date and include the current session. **Reset stats** clears the history and
+starts counting from zero for any ongoing session. No frames or images are
+stored.
+
+Select **Launch at login** in the menu to install a per-user LaunchAgent under
+`~/Library/LaunchAgents`. It runs this checkout's `run.sh` at your next login.
+Uncheck it to remove the agent. macOS may ask for camera permission again for
+the launching process. If you move the checkout, toggle the setting off and
+on from its new location.
+
 ### Chrome automation
 
 Install the unpacked [LockIn Chrome extension](extension/README.md) to arm
-LockIn while Claude or ChatGPT generates a response. The daemon listens on
+LockIn while Claude, ChatGPT, or Gemini generates a response. The daemon listens on
 `127.0.0.1:8765` by default in both menu bar and debug modes. Its menu bar menu
 shows whether an extension is connected.
 
@@ -85,6 +102,14 @@ time out after 20 minutes by default. A manual disarm holds until the next
 group of busy tabs, and a manually armed session follows the manual timeout.
 The extension sends generation state, site, and tab ID over loopback. It
 doesn't read or send conversation text.
+
+### Works in Chromium browsers (Chrome, Arc, Edge, Brave), not Safari
+
+Load the Manifest V3 extension unpacked from `extension/` on a Chromium 116+
+browser with developer mode enabled. Safari uses a different extension
+installation workflow and is unsupported. The generation selectors for
+`claude.ai`, `chatgpt.com`, `chat.openai.com`, and `gemini.google.com` have
+fixture coverage and remain unverified on live signed-in pages.
 
 ### Attention settings and alert sound
 
