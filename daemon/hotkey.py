@@ -2,6 +2,7 @@
 
 import sys
 from queue import Empty, SimpleQueue
+from threading import Thread
 
 
 class ArmHotkey:
@@ -53,6 +54,10 @@ class ArmHotkey:
             toggle = not toggle
 
     def close(self):
-        if self.listener is not None:
-            self.listener.stop()
-            self.listener = None
+        listener = self.listener
+        self.listener = None
+        if listener is not None:
+            while listener.is_alive():
+                listener.stop()
+                # Use Thread.join so pynput cannot wait on its exception queue.
+                Thread.join(listener, timeout=0.1)

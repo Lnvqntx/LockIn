@@ -2,3 +2,6 @@ mediapipe==0.10.21
 opencv-contrib-python==4.9.0.80
 numpy<2
 pynput==1.8.1
+rumps @ ./vendor/rumps-0.4.0-py3-none-any.whl ; sys_platform == "darwin"
+pyobjc-framework-cocoa==13.1 ; sys_platform == "darwin"
+pyobjc-framework-quartz==13.1 ; sys_platform == "darwin"

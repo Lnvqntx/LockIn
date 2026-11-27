@@ -8,6 +8,7 @@ Run these commands from the repository root. The Python dependencies install
 from prebuilt wheels on Intel Macs with Python 3.12, so no compiler, Xcode, or
 Xcode Command Line Tools are needed. **Do not paste the whole setup block
 twice.** If a command fails, fix the error and resume at that command.
+The repository bundles the rumps wheel because PyPI publishes rumps as source.
 
 ```sh
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -17,7 +18,7 @@ uv pip install -r requirements.txt --only-binary :all:
 curl --fail --location \
   https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task \
   --output daemon/face_landmarker.task
-.venv/bin/python daemon/vision.py
+./run.sh
 ```
 
 On the first run, look at your screen during the three-second countdown. LockIn
@@ -25,6 +26,30 @@ averages the yaw and pitch it sees during that time and saves your baseline in
 the repository's `config.json`. Run `.venv/bin/python daemon/vision.py --calibrate` to
 record a new baseline while keeping your current settings. The countdown
 appears in the terminal and in the preview when `--debug` is enabled.
+
+### Menu bar mode
+
+Run `./run.sh` from the repository root. It activates the virtual environment
+and runs `python -m daemon.vision --menubar`. The title shows **IDLE**, **ARMED**,
+or **ALERTING**. This mode uses the camera without opening a video window.
+Use `--debug` separately for a video preview.
+
+- **Arm/Disarm** shows your configured shortcut and works when macOS blocks
+  the global hotkey.
+- **Recalibrate** pauses monitoring. Look at your screen while the title counts
+  down. A tick plays each second and a confirmation sounds when the baseline is
+  saved. Arm again to resume monitoring.
+- **Sensitivity** scales the configured yaw threshold, pitch threshold, and
+  grace time by **1.25×** for Low, **1×** for Medium, or **0.75×** for High.
+- **Alert sound** lists supported audio files in `assets/` at startup and
+  previews the selected file. Sensitivity and sound choices are saved to
+  `config.json`.
+- **Open config.json** opens the saved settings in your default editor.
+  **Quit** stops playback and releases the camera.
+
+If the title displays **Camera access needed**, check **System Settings →
+Privacy & Security → Camera** for the app you used to launch LockIn. Restart
+LockIn after granting permission.
 
 ### Arm and disarm
 
@@ -64,9 +89,12 @@ changes. The generated file contains your baseline and these defaults.
 | `smoothing_frames` | 5 | Number of recent angle readings to average |
 | `hotkey` | `<ctrl>+<alt>+l` | Global arm/disarm shortcut in pynput syntax |
 | `armed_timeout_seconds` | 300 | Time armed before automatic disarm |
+| `sensitivity` | Medium | Sensitivity preset applied to thresholds and grace time |
+| `alert_sound` | `alert.wav` | Audio filename in `assets/` |
 
-While alerting, LockIn plays `assets/alert.wav` using macOS's built-in `afplay`.
-The arm and disarm cues use `assets/arm.wav` and `assets/disarm.wav`. Replace
+While alerting, LockIn plays the selected sound using macOS's built-in `afplay`.
+The default alert is `assets/alert.wav`. The arm and disarm cues use
+`assets/arm.wav` and `assets/disarm.wav`. Replace
 any of these files with a WAV of your choice to change its sound.
 If your sound lasts longer than the repeat interval, the next play waits until
 the current one finishes.
