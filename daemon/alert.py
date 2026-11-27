@@ -1,4 +1,4 @@
-"""Repeat an audible macOS alert without blocking the camera loop."""
+"""Play macOS alert and mode sounds without overlapping or blocking the camera."""
 
 import subprocess
 import sys
@@ -11,27 +11,40 @@ class AudioAlert:
         self.repeat_seconds = repeat_seconds
         self.next_play_at = None
         self.player = None
+        self.pending_cue = None
+
+    def _play(self, sound: Path):
+        try:
+            self.player = subprocess.Popen(["afplay", str(sound)])
+        except OSError as error:
+            print(f"Audio error: {error}", file=sys.stderr, flush=True)
+
+    def cue(self, sound: Path):
+        self._stop_player()
+        self.next_play_at = None
+        self.pending_cue = sound
 
     def update(self, now: float, active: bool):
         if self.player is not None and self.player.poll() is not None:
             self.player = None
         if not active:
             self.next_play_at = None
-            return
         if self.player is not None:
             return
-        if self.next_play_at is not None and now < self.next_play_at:
-            return
+        if self.pending_cue is not None:
+            sound = self.pending_cue
+            self.pending_cue = None
+            self._play(sound)
+        elif active and (self.next_play_at is None or now >= self.next_play_at):
+            self.next_play_at = now + self.repeat_seconds
+            self._play(self.sound)
 
-        self.next_play_at = now + self.repeat_seconds
-        try:
-            self.player = subprocess.Popen(["afplay", str(self.sound)])
-        except OSError as error:
-            print(f"Audio alert error: {error}", file=sys.stderr, flush=True)
+    def _stop_player(self):
+        if self.player is not None and self.player.poll() is None:
+            self.player.kill()
 
     def close(self):
+        self._stop_player()
         if self.player is not None:
-            if self.player.poll() is None:
-                self.player.terminate()
             self.player.wait()
             self.player = None

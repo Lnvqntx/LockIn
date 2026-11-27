@@ -12,14 +12,16 @@ import mediapipe as mp
 
 if __package__:
     from .alert import AudioAlert
+    from .hotkey import ArmHotkey
     from .state import AttentionTracker, Config, State
 else:
     from alert import AudioAlert
+    from hotkey import ArmHotkey
     from state import AttentionTracker, Config, State
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config.json"
-SOUND_PATH = ROOT / "assets" / "alert.wav"
+ASSETS = ROOT / "assets"
 DEFAULT_MODEL = Path(__file__).with_name("face_landmarker.task")
 WINDOW_NAME = "LockIn Vision"
 
@@ -34,17 +36,27 @@ def head_angles(matrix):
     return yaw, pitch
 
 
-def run_camera(landmarker, debug, config, calibrate):
+def log_transition(before, after, reason=None):
+    timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    detail = f" ({reason})" if reason else ""
+    print(f"[{timestamp}] {before.value} -> {after.value}{detail}", flush=True)
+
+
+def run_camera(landmarker, debug, config, calibrate, always_armed=False):
     backend = cv2.CAP_AVFOUNDATION if sys.platform == "darwin" else cv2.CAP_ANY
     camera = cv2.VideoCapture(0, backend)
-    alert = AudioAlert(SOUND_PATH, config.repeat_seconds)
+    alert = AudioAlert(ASSETS / "alert.wav", config.repeat_seconds)
+    hotkey = None
     window_open = False
     try:
         if not camera.isOpened():
             raise RuntimeError("Could not open the webcam. Check camera permissions.")
 
+        tracker = AttentionTracker(config)
+        if not always_armed:
+            hotkey = ArmHotkey(config.hotkey)
+        fallback_toggle = False
         started_at = time.monotonic()
-        tracker = None if calibrate else AttentionTracker(config, started_at)
         calibration_ends_at = started_at + config.calibration_seconds
         calibration_samples = []
         last_countdown = None
@@ -67,7 +79,7 @@ def run_camera(landmarker, debug, config, calibrate):
             if face_detected and result.facial_transformation_matrixes:
                 angles = head_angles(result.facial_transformation_matrixes[0])
 
-            if tracker is None and now >= calibration_ends_at:
+            if calibrate and now >= calibration_ends_at:
                 if not calibration_samples:
                     raise RuntimeError("No face detected during calibration. Try --calibrate again.")
                 yaws, pitches = zip(*calibration_samples)
@@ -75,22 +87,43 @@ def run_camera(landmarker, debug, config, calibrate):
                 config.baseline_pitch = sum(pitches) / len(pitches)
                 config.save(CONFIG_PATH)
                 print(f"Calibration saved to {CONFIG_PATH}", flush=True)
-                tracker = AttentionTracker(config, now)
+                calibrate = False
 
-            if tracker is None:
+            toggle_requested = fallback_toggle
+            fallback_toggle = False
+            hotkey_available = hotkey is not None and hotkey.available()
+            if hotkey is not None and hotkey.take_toggle():
+                toggle_requested = not toggle_requested
+
+            if calibrate:
                 countdown = math.ceil(calibration_ends_at - now)
-                overlay = f"Look at your screen ({countdown})"
+                prompt = f"Look at your screen ({countdown})"
+                overlay = f"IDLE | {prompt}"
                 if countdown != last_countdown:
-                    print(overlay, flush=True)
+                    print(prompt, flush=True)
                     last_countdown = countdown
                 if angles is not None:
                     calibration_samples.append(angles)
             else:
                 previous_state = tracker.state
-                state = tracker.update(now, face_detected, angles)
-                if state != previous_state:
-                    timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
-                    print(f"[{timestamp}] {previous_state.value} -> {state.value}", flush=True)
+                was_armed = tracker.armed
+                if always_armed:
+                    if not tracker.armed:
+                        tracker.set_armed(True, now)
+                elif toggle_requested:
+                    tracker.set_armed(not tracker.armed, now)
+
+                state = tracker.update(now, face_detected, angles, always_armed=always_armed)
+                if was_armed != tracker.armed:
+                    if tracker.armed:
+                        reason = "always armed" if always_armed else "armed"
+                        alert.cue(ASSETS / "arm.wav")
+                    else:
+                        reason = "disarmed" if toggle_requested else "armed timeout"
+                        alert.cue(ASSETS / "disarm.wav")
+                    log_transition(previous_state, state, reason)
+                elif state is not previous_state:
+                    log_transition(previous_state, state)
                 alert.update(now, state is State.ALERTING)
 
                 if angles is not None:
@@ -104,7 +137,8 @@ def run_camera(landmarker, debug, config, calibrate):
                 else:
                     overlay = "Face detected" if face_detected else "Looking for face"
                 missing_reported = tracker.face_missing
-                overlay = f"{state.value} | {overlay}"
+                mode = f"ARMED / {state.value}" if tracker.armed else "IDLE"
+                overlay = f"{mode} | {overlay}"
 
             if debug:
                 cv2.putText(
@@ -113,7 +147,10 @@ def run_camera(landmarker, debug, config, calibrate):
                 )
                 cv2.imshow(WINDOW_NAME, frame)
                 window_open = True
-                if (cv2.waitKey(1) & 0xFF) in (27, ord("q")):
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord(" ") and not hotkey_available and not always_armed:
+                    fallback_toggle = True
+                if key in (27, ord("q")):
                     break
                 if cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
                     break
@@ -123,13 +160,21 @@ def run_camera(landmarker, debug, config, calibrate):
             if window_open:
                 cv2.destroyAllWindows()
         finally:
-            alert.close()
+            try:
+                alert.close()
+            finally:
+                if hotkey is not None:
+                    hotkey.close()
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--debug", action="store_true", help="Show the live webcam preview.")
     parser.add_argument("--calibrate", action="store_true", help="Record a new screen-facing baseline.")
+    parser.add_argument(
+        "--always-armed", action="store_true",
+        help="Stay armed for testing, with no hotkey or automatic timeout.",
+    )
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL, help="Path to the .task model.")
     args = parser.parse_args()
     if not args.model.is_file():
@@ -147,7 +192,7 @@ def main():
             config = Config()
             args.calibrate = True
         with mp.tasks.vision.FaceLandmarker.create_from_options(options) as landmarker:
-            run_camera(landmarker, args.debug, config, args.calibrate)
+            run_camera(landmarker, args.debug, config, args.calibrate, args.always_armed)
     except KeyboardInterrupt:
         return 0
     except (RuntimeError, ValueError, OSError, cv2.error) as error:

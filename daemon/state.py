@@ -21,6 +21,8 @@ class Config:
     repeat_seconds: float = 5.0
     calibration_seconds: float = 3.0
     smoothing_frames: int = 5
+    hotkey: str = "<ctrl>+<alt>+l"
+    armed_timeout_seconds: float = 300.0
 
     @classmethod
     def load(cls, path: Path):
@@ -32,6 +34,8 @@ class Config:
             value = values.get(field.name, getattr(config, field.name))
             if field.name == "smoothing_frames":
                 valid = type(value) is int and value >= 1
+            elif field.name == "hotkey":
+                valid = isinstance(value, str) and bool(value.strip())
             else:
                 valid = type(value) in (int, float) and math.isfinite(value)
                 if valid and not field.name.startswith("baseline_"):
@@ -56,22 +60,43 @@ class Config:
 
 
 class State(Enum):
+    IDLE = "IDLE"
     FOCUSED = "FOCUSED"
     ALERTING = "ALERTING"
 
 
 class AttentionTracker:
-    def __init__(self, config: Config, now: float):
+    def __init__(self, config: Config):
         self.config = config
-        self.state = State.FOCUSED
-        self.face_missing = False
-        self.last_face_at = now
+        self.state = State.IDLE
+        self.armed = False
+        self.armed_since = None
         self.samples = deque(maxlen=config.smoothing_frames)
+        self.face_missing = False
+        self.last_face_at = None
         self.away_since = None
         self.on_screen_since = None
 
-    def update(self, now: float, face_detected: bool, angles):
+    def set_armed(self, armed: bool, now: float):
+        if self.armed == armed:
+            return
+        self.armed = armed
+        self.armed_since = now if armed else None
+        self.state = State.FOCUSED if armed else State.IDLE
+        self.samples.clear()
+        self.face_missing = False
+        self.last_face_at = now
+        self.away_since = None
+        self.on_screen_since = None
+
+    def update(self, now: float, face_detected: bool, angles, *, always_armed=False):
         """Process one frame and return the current state."""
+        if not self.armed:
+            return self.state
+        if not always_armed and now - self.armed_since >= self.config.armed_timeout_seconds:
+            self.set_armed(False, now)
+            return self.state
+
         if face_detected:
             self.last_face_at = now
         self.face_missing = now - self.last_face_at >= self.config.missing_seconds
