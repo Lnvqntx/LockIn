@@ -9,6 +9,9 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 
+SENSITIVITY_SCALE = {"Low": 1.25, "Medium": 1.0, "High": 0.75}
+
+
 @dataclass
 class Config:
     baseline_yaw: float = 0.0
@@ -23,6 +26,8 @@ class Config:
     smoothing_frames: int = 5
     hotkey: str = "<ctrl>+<alt>+l"
     armed_timeout_seconds: float = 300.0
+    sensitivity: str = "Medium"
+    alert_sound: str = "alert.wav"
 
     @classmethod
     def load(cls, path: Path):
@@ -36,6 +41,10 @@ class Config:
                 valid = type(value) is int and value >= 1
             elif field.name == "hotkey":
                 valid = isinstance(value, str) and bool(value.strip())
+            elif field.name == "sensitivity":
+                valid = isinstance(value, str) and value in SENSITIVITY_SCALE
+            elif field.name == "alert_sound":
+                valid = isinstance(value, str) and bool(value) and Path(value).name == value
             else:
                 valid = type(value) in (int, float) and math.isfinite(value)
                 if valid and not field.name.startswith("baseline_"):
@@ -101,6 +110,7 @@ class AttentionTracker:
             self.last_face_at = now
         self.face_missing = now - self.last_face_at >= self.config.missing_seconds
 
+        scale = SENSITIVITY_SCALE[self.config.sensitivity]
         away = None
         if angles is not None:
             self.samples.append(angles)
@@ -108,8 +118,8 @@ class AttentionTracker:
             yaw_offset = sum(yaws) / len(yaws) - self.config.baseline_yaw
             pitch_offset = sum(pitches) / len(pitches) - self.config.baseline_pitch
             away = (
-                abs(yaw_offset) > self.config.yaw_threshold
-                or -pitch_offset > self.config.pitch_threshold
+                abs(yaw_offset) > self.config.yaw_threshold * scale
+                or -pitch_offset > self.config.pitch_threshold * scale
             )
         else:
             self.samples.clear()
@@ -120,7 +130,7 @@ class AttentionTracker:
             self.on_screen_since = None
             if self.away_since is None:
                 self.away_since = now
-            if now - self.away_since >= self.config.grace_seconds:
+            if now - self.away_since >= self.config.grace_seconds * scale:
                 self.state = State.ALERTING
         elif away is False:
             self.away_since = None

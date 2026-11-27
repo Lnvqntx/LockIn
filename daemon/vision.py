@@ -6,6 +6,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from queue import Empty
 
 import cv2
 import mediapipe as mp
@@ -13,10 +14,12 @@ import mediapipe as mp
 if __package__:
     from .alert import AudioAlert
     from .hotkey import ArmHotkey
+    from .menubar import run_menubar
     from .state import AttentionTracker, Config, State
 else:
     from alert import AudioAlert
     from hotkey import ArmHotkey
+    from menubar import run_menubar
     from state import AttentionTracker, Config, State
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -24,6 +27,16 @@ CONFIG_PATH = ROOT / "config.json"
 ASSETS = ROOT / "assets"
 DEFAULT_MODEL = Path(__file__).with_name("face_landmarker.task")
 WINDOW_NAME = "LockIn Vision"
+CAMERA_HELP = "Camera access needed: System Settings > Privacy & Security > Camera"
+AUDIO_EXTENSIONS = {".wav", ".aif", ".aiff", ".caf", ".m4a", ".mp3", ".aac"}
+
+
+class CameraError(RuntimeError):
+    pass
+
+
+def menu_mode(state):
+    return "ARMED" if state is State.FOCUSED else state.value
 
 
 def head_angles(matrix):
@@ -42,15 +55,21 @@ def log_transition(before, after, reason=None):
     print(f"[{timestamp}] {before.value} -> {after.value}{detail}", flush=True)
 
 
-def run_camera(landmarker, debug, config, calibrate, always_armed=False):
+def run_camera(
+    landmarker, debug, config, calibrate, always_armed=False,
+    *, commands=None, events=None, stop=None, sounds=(),
+):
     backend = cv2.CAP_AVFOUNDATION if sys.platform == "darwin" else cv2.CAP_ANY
-    camera = cv2.VideoCapture(0, backend)
-    alert = AudioAlert(ASSETS / "alert.wav", config.repeat_seconds)
+    try:
+        camera = cv2.VideoCapture(0, backend)
+    except cv2.error as error:
+        raise CameraError("Could not open the webcam. Check camera permissions.") from error
+    alert = AudioAlert(ASSETS / config.alert_sound, config.repeat_seconds)
     hotkey = None
     window_open = False
     try:
         if not camera.isOpened():
-            raise RuntimeError("Could not open the webcam. Check camera permissions.")
+            raise CameraError("Could not open the webcam. Check camera permissions.")
 
         tracker = AttentionTracker(config)
         if not always_armed:
@@ -62,12 +81,20 @@ def run_camera(landmarker, debug, config, calibrate, always_armed=False):
         last_countdown = None
         last_timestamp_ms = -1
         missing_reported = False
+        has_baseline = not calibrate or CONFIG_PATH.is_file()
+        if events is not None and not calibrate:
+            events.put(("mode", "IDLE"))
 
-        while True:
-            ok, frame = camera.read()
+        while stop is None or not stop.is_set():
+            try:
+                ok, frame = camera.read()
+            except cv2.error as error:
+                raise CameraError("Could not read a frame from the webcam.") from error
             if not ok:
-                raise RuntimeError("Could not read a frame from the webcam.")
+                raise CameraError("Could not read a frame from the webcam.")
 
+            if stop is not None and stop.is_set():
+                break
             now = time.monotonic()
             timestamp_ms = max(last_timestamp_ms + 1, int((now - started_at) * 1000))
             last_timestamp_ms = timestamp_ms
@@ -79,18 +106,77 @@ def run_camera(landmarker, debug, config, calibrate, always_armed=False):
             if face_detected and result.facial_transformation_matrixes:
                 angles = head_angles(result.facial_transformation_matrixes[0])
 
-            if calibrate and now >= calibration_ends_at:
-                if not calibration_samples:
-                    raise RuntimeError("No face detected during calibration. Try --calibrate again.")
-                yaws, pitches = zip(*calibration_samples)
-                config.baseline_yaw = sum(yaws) / len(yaws)
-                config.baseline_pitch = sum(pitches) / len(pitches)
-                config.save(CONFIG_PATH)
-                print(f"Calibration saved to {CONFIG_PATH}", flush=True)
-                calibrate = False
-
             toggle_requested = fallback_toggle
             fallback_toggle = False
+
+            if commands is not None:
+                while True:
+                    try:
+                        command, value = commands.get_nowait()
+                    except Empty:
+                        break
+                    if command == "toggle" and not calibrate and has_baseline:
+                        toggle_requested = not toggle_requested
+                    elif command == "calibrate":
+                        if tracker.armed:
+                            log_transition(tracker.state, State.IDLE, "recalibrating")
+                            tracker.set_armed(False, now)
+                        calibrate = True
+                        calibration_ends_at = now + config.calibration_seconds
+                        calibration_samples.clear()
+                        last_countdown = None
+                    elif command in ("sensitivity", "sound"):
+                        old_sensitivity, old_sound = config.sensitivity, config.alert_sound
+                        if command == "sensitivity":
+                            config.sensitivity = value
+                        elif value in sounds:
+                            config.alert_sound = value
+                        try:
+                            if has_baseline:
+                                config.save(CONFIG_PATH)
+                        except OSError as error:
+                            config.sensitivity, config.alert_sound = old_sensitivity, old_sound
+                            events.put(("message", f"Could not save settings: {error}"))
+                        else:
+                            if command == "sensitivity" and config.sensitivity != old_sensitivity:
+                                tracker.away_since = None
+                            elif command == "sound" and value in sounds:
+                                alert.sound = ASSETS / config.alert_sound
+                                alert.cue(alert.sound)
+                            events.put(("settings", (config.sensitivity, config.alert_sound)))
+
+            calibration_confirmed = False
+            if calibrate and now >= calibration_ends_at:
+                calibrate = False
+                message = None
+                if not calibration_samples:
+                    message = "No face detected during calibration. Choose Recalibrate to try again."
+                    if events is None:
+                        raise RuntimeError("No face detected during calibration. Try --calibrate again.")
+                else:
+                    previous_baseline = config.baseline_yaw, config.baseline_pitch
+                    yaws, pitches = zip(*calibration_samples)
+                    config.baseline_yaw = sum(yaws) / len(yaws)
+                    config.baseline_pitch = sum(pitches) / len(pitches)
+                    try:
+                        config.save(CONFIG_PATH)
+                    except OSError as error:
+                        config.baseline_yaw, config.baseline_pitch = previous_baseline
+                        if events is None:
+                            raise
+                        message = f"Could not save calibration: {error}"
+                    else:
+                        has_baseline = True
+                        print(f"Calibration saved to {CONFIG_PATH}", flush=True)
+                        if events is not None:
+                            alert.cue(ASSETS / "calibrated.wav")
+                            calibration_confirmed = True
+                calibration_samples.clear()
+                if events is not None:
+                    events.put(("mode" if has_baseline else "needs_calibration", "IDLE"))
+                    if message:
+                        events.put(("message", message))
+
             hotkey_available = hotkey is not None and hotkey.available()
             if hotkey is not None and hotkey.take_toggle():
                 toggle_requested = not toggle_requested
@@ -102,34 +188,41 @@ def run_camera(landmarker, debug, config, calibrate, always_armed=False):
                 if countdown != last_countdown:
                     print(prompt, flush=True)
                     last_countdown = countdown
+                    if events is not None:
+                        events.put(("countdown", countdown))
+                        alert.cue(ASSETS / "tick.wav")
+                alert.update(now, False)
                 if angles is not None:
                     calibration_samples.append(angles)
             else:
                 previous_state = tracker.state
                 was_armed = tracker.armed
-                if always_armed:
-                    if not tracker.armed:
-                        tracker.set_armed(True, now)
-                elif toggle_requested:
+                if always_armed and has_baseline:
+                    tracker.set_armed(True, now)
+                elif toggle_requested and has_baseline and not always_armed:
                     tracker.set_armed(not tracker.armed, now)
 
                 state = tracker.update(now, face_detected, angles, always_armed=always_armed)
                 if was_armed != tracker.armed:
                     if tracker.armed:
                         reason = "always armed" if always_armed else "armed"
-                        alert.cue(ASSETS / "arm.wav")
+                        if not calibration_confirmed:
+                            alert.cue(ASSETS / "arm.wav")
                     else:
                         reason = "disarmed" if toggle_requested else "armed timeout"
                         alert.cue(ASSETS / "disarm.wav")
                     log_transition(previous_state, state, reason)
                 elif state is not previous_state:
                     log_transition(previous_state, state)
+                if events is not None and state is not previous_state:
+                    events.put(("mode", menu_mode(state)))
                 alert.update(now, state is State.ALERTING)
 
                 if angles is not None:
                     yaw, pitch = angles
                     overlay = f"Yaw {yaw:+.1f} deg | Pitch {pitch:+.1f} deg"
-                    print(overlay, flush=True)
+                    if events is None:
+                        print(overlay, flush=True)
                 elif tracker.face_missing:
                     overlay = "face missing"
                     if not missing_reported:
@@ -155,8 +248,8 @@ def run_camera(landmarker, debug, config, calibrate, always_armed=False):
                 if cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
                     break
     finally:
-        camera.release()
         try:
+            camera.release()
             if window_open:
                 cv2.destroyAllWindows()
         finally:
@@ -169,7 +262,9 @@ def run_camera(landmarker, debug, config, calibrate, always_armed=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--debug", action="store_true", help="Show the live webcam preview.")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--debug", action="store_true", help="Show the live webcam preview.")
+    mode.add_argument("--menubar", action="store_true", help="Run as a macOS menu bar app.")
     parser.add_argument("--calibrate", action="store_true", help="Record a new screen-facing baseline.")
     parser.add_argument(
         "--always-armed", action="store_true",
@@ -180,22 +275,51 @@ def main():
     if not args.model.is_file():
         parser.error(f"Model not found at {args.model}. See README.md for the download command.")
 
-    options = mp.tasks.vision.FaceLandmarkerOptions(
-        base_options=mp.tasks.BaseOptions(model_asset_path=str(args.model)),
-        running_mode=mp.tasks.vision.RunningMode.VIDEO,
-        output_facial_transformation_matrixes=True,
-    )
+    if args.menubar and sys.platform != "darwin":
+        parser.error("--menubar requires macOS.")
+
     try:
         try:
             config = Config.load(CONFIG_PATH)
         except FileNotFoundError:
             config = Config()
             args.calibrate = True
-        with mp.tasks.vision.FaceLandmarker.create_from_options(options) as landmarker:
-            run_camera(landmarker, args.debug, config, args.calibrate, args.always_armed)
+
+        sounds = sorted(
+            path.name for path in ASSETS.iterdir()
+            if path.is_file() and path.suffix.lower() in AUDIO_EXTENSIONS
+        )
+        if config.alert_sound not in sounds:
+            config.alert_sound = "alert.wav"
+
+        def run_worker(commands=None, events=None, stop=None):
+            try:
+                options = mp.tasks.vision.FaceLandmarkerOptions(
+                    base_options=mp.tasks.BaseOptions(model_asset_path=str(args.model)),
+                    running_mode=mp.tasks.vision.RunningMode.VIDEO,
+                    output_facial_transformation_matrixes=True,
+                )
+                with mp.tasks.vision.FaceLandmarker.create_from_options(options) as landmarker:
+                    run_camera(
+                        landmarker, args.debug, config, args.calibrate, args.always_armed,
+                        commands=commands, events=events, stop=stop, sounds=sounds,
+                    )
+            except (RuntimeError, ValueError, OSError, cv2.error) as error:
+                if events is None:
+                    raise
+                print(f"Vision error: {error}", file=sys.stderr, flush=True)
+                failure = ("Camera access needed", CAMERA_HELP) if isinstance(error, CameraError) else (
+                    "LockIn error", f"Vision error: {error}",
+                )
+                events.put(("failure", failure))
+
+        if args.menubar:
+            run_menubar(config, CONFIG_PATH, sounds, run_worker, always_armed=args.always_armed)
+        else:
+            run_worker()
     except KeyboardInterrupt:
         return 0
-    except (RuntimeError, ValueError, OSError, cv2.error) as error:
+    except (ImportError, RuntimeError, ValueError, OSError, cv2.error) as error:
         print(f"Vision error: {error}", file=sys.stderr)
         return 1
     return 0
