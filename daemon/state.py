@@ -26,6 +26,8 @@ class Config:
     smoothing_frames: int = 5
     hotkey: str = "<ctrl>+<alt>+l"
     armed_timeout_seconds: float = 300.0
+    websocket_port: int = 8765
+    extension_timeout_seconds: float = 1200.0
     sensitivity: str = "Medium"
     alert_sound: str = "alert.wav"
 
@@ -39,6 +41,8 @@ class Config:
             value = values.get(field.name, getattr(config, field.name))
             if field.name == "smoothing_frames":
                 valid = type(value) is int and value >= 1
+            elif field.name == "websocket_port":
+                valid = type(value) is int and 1 <= value <= 65535
             elif field.name == "hotkey":
                 valid = isinstance(value, str) and bool(value.strip())
             elif field.name == "sensitivity":
@@ -80,16 +84,18 @@ class AttentionTracker:
         self.state = State.IDLE
         self.armed = False
         self.armed_since = None
+        self.armed_by_extension = False
         self.samples = deque(maxlen=config.smoothing_frames)
         self.face_missing = False
         self.last_face_at = None
         self.away_since = None
         self.on_screen_since = None
 
-    def set_armed(self, armed: bool, now: float):
+    def set_armed(self, armed: bool, now: float, *, by_extension=False):
         if self.armed == armed:
             return
         self.armed = armed
+        self.armed_by_extension = armed and by_extension
         self.armed_since = now if armed else None
         self.state = State.FOCUSED if armed else State.IDLE
         self.samples.clear()
@@ -102,7 +108,11 @@ class AttentionTracker:
         """Process one frame and return the current state."""
         if not self.armed:
             return self.state
-        if not always_armed and now - self.armed_since >= self.config.armed_timeout_seconds:
+        timeout = (
+            self.config.extension_timeout_seconds if self.armed_by_extension
+            else self.config.armed_timeout_seconds
+        )
+        if not always_armed and now - self.armed_since >= timeout:
             self.set_armed(False, now)
             return self.state
 

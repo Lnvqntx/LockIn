@@ -72,6 +72,20 @@ The script prints yaw and pitch in degrees. Positive yaw means you turned to
 your right, and positive pitch means you looked up. It timestamps transitions
 between `IDLE`, `FOCUSED`, and `ALERTING`. Webcam frames stay in memory.
 
+### Chrome automation
+
+Install the unpacked [LockIn Chrome extension](extension/README.md) to arm
+LockIn while Claude or ChatGPT generates a response. The daemon listens on
+`127.0.0.1:8765` by default in both menu bar and debug modes. Its menu bar menu
+shows whether an extension is connected.
+
+The first busy tab arms LockIn. When the last one goes idle or its connection
+drops, LockIn disarms and plays the disarm cue. Extension-driven sessions also
+time out after 20 minutes by default. A manual disarm holds until the next
+group of busy tabs, and a manually armed session follows the manual timeout.
+The extension sends generation state, site, and tab ID over loopback. It
+doesn't read or send conversation text.
+
 ### Attention settings and alert sound
 
 Edit `config.json` after the first calibration and restart LockIn to apply
@@ -88,7 +102,9 @@ changes. The generated file contains your baseline and these defaults.
 | `calibration_seconds` | 3 | Countdown and baseline sampling duration |
 | `smoothing_frames` | 5 | Number of recent angle readings to average |
 | `hotkey` | `<ctrl>+<alt>+l` | Global arm/disarm shortcut in pynput syntax |
-| `armed_timeout_seconds` | 300 | Time armed before automatic disarm |
+| `armed_timeout_seconds` | 300 | Time manually armed before automatic disarm |
+| `websocket_port` | 8765 | Loopback port used by the Chrome extension |
+| `extension_timeout_seconds` | 1200 | Time extension-armed before automatic disarm |
 | `sensitivity` | Medium | Sensitivity preset applied to thresholds and grace time |
 | `alert_sound` | `alert.wav` | Audio filename in `assets/` |
 

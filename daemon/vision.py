@@ -6,7 +6,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from queue import Empty
+from queue import Empty, SimpleQueue
 
 import cv2
 import mediapipe as mp
@@ -15,11 +15,13 @@ if __package__:
     from .alert import AudioAlert
     from .hotkey import ArmHotkey
     from .menubar import run_menubar
+    from .server import ExtensionServer
     from .state import AttentionTracker, Config, State
 else:
     from alert import AudioAlert
     from hotkey import ArmHotkey
     from menubar import run_menubar
+    from server import ExtensionServer
     from state import AttentionTracker, Config, State
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -57,7 +59,7 @@ def log_transition(before, after, reason=None):
 
 def run_camera(
     landmarker, debug, config, calibrate, always_armed=False,
-    *, commands=None, events=None, stop=None, sounds=(),
+    *, commands=None, events=None, stop=None, sounds=(), extension_activity=None,
 ):
     backend = cv2.CAP_AVFOUNDATION if sys.platform == "darwin" else cv2.CAP_ANY
     try:
@@ -81,6 +83,8 @@ def run_camera(
         last_countdown = None
         last_timestamp_ms = -1
         missing_reported = False
+        extension_busy = False
+        extension_arm_pending = False
         has_baseline = not calibrate or CONFIG_PATH.is_file()
         if events is not None and not calibrate:
             events.put(("mode", "IDLE"))
@@ -177,6 +181,14 @@ def run_camera(
                     if message:
                         events.put(("message", message))
 
+            if extension_activity is not None:
+                while True:
+                    try:
+                        extension_busy = extension_activity.get_nowait()
+                    except Empty:
+                        break
+                    extension_arm_pending = extension_busy
+
             hotkey_available = hotkey is not None and hotkey.available()
             if hotkey is not None and hotkey.take_toggle():
                 toggle_requested = not toggle_requested
@@ -197,19 +209,30 @@ def run_camera(
             else:
                 previous_state = tracker.state
                 was_armed = tracker.armed
-                if always_armed and has_baseline:
-                    tracker.set_armed(True, now)
-                elif toggle_requested and has_baseline and not always_armed:
-                    tracker.set_armed(not tracker.armed, now)
+                reason = None
+                extension_owned = tracker.armed_by_extension
+                if has_baseline:
+                    if always_armed:
+                        tracker.set_armed(True, now)
+                        reason = "always armed"
+                    elif toggle_requested:
+                        tracker.set_armed(not tracker.armed, now)
+                        reason = "armed" if tracker.armed else "disarmed"
+                    elif not extension_busy and extension_owned:
+                        tracker.set_armed(False, now)
+                        reason = "extension idle"
+                    elif extension_arm_pending and not tracker.armed:
+                        tracker.set_armed(True, now, by_extension=True)
+                        reason = "extension busy"
+                    extension_arm_pending = False
 
                 state = tracker.update(now, face_detected, angles, always_armed=always_armed)
                 if was_armed != tracker.armed:
                     if tracker.armed:
-                        reason = "always armed" if always_armed else "armed"
                         if not calibration_confirmed:
                             alert.cue(ASSETS / "arm.wav")
                     else:
-                        reason = "disarmed" if toggle_requested else "armed timeout"
+                        reason = reason or ("extension timeout" if extension_owned else "armed timeout")
                         alert.cue(ASSETS / "disarm.wav")
                     log_transition(previous_state, state, reason)
                 elif state is not previous_state:
@@ -299,10 +322,15 @@ def main():
                     running_mode=mp.tasks.vision.RunningMode.VIDEO,
                     output_facial_transformation_matrixes=True,
                 )
-                with mp.tasks.vision.FaceLandmarker.create_from_options(options) as landmarker:
+                extension_activity = SimpleQueue()
+                with (
+                    ExtensionServer(config.websocket_port, extension_activity, events),
+                    mp.tasks.vision.FaceLandmarker.create_from_options(options) as landmarker,
+                ):
                     run_camera(
                         landmarker, args.debug, config, args.calibrate, args.always_armed,
                         commands=commands, events=events, stop=stop, sounds=sounds,
+                        extension_activity=extension_activity,
                     )
             except (RuntimeError, ValueError, OSError, cv2.error) as error:
                 if events is None:

@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LockIn</title>
+  <link rel="stylesheet" href="popup.css">
+  <script src="popup.js" defer></script>
+</head>
+<body>
+  <h1>LockIn</h1>
+  <p id="status" role="status">Checking connection…</p>
+  <form>
+    <label><input id="enabled" type="checkbox" disabled> Enable browser automation</label>
+    <label>Daemon port <input id="port" type="number" min="1" max="65535" required disabled></label>
+    <button id="save" disabled>Save port</button>
+  </form>
+  <h2>Busy tabs</h2>
+  <ul id="tabs"></ul>
+  <p id="error" role="alert"></p>
+</body>
+</html>
