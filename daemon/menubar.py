@@ -28,6 +28,7 @@ def run_menubar(config, config_path, sounds, run_worker, *, always_armed=False):
         rumps.quit_application()
 
     status = rumps.MenuItem("Starting camera…")
+    extension_status = rumps.MenuItem("Extension: not connected")
     toggle = rumps.MenuItem(f"Arm ({config.hotkey})")
     recalibrate = rumps.MenuItem("Recalibrate", callback=send("calibrate"))
     sensitivity = rumps.MenuItem("Sensitivity")
@@ -42,7 +43,7 @@ def run_menubar(config, config_path, sounds, run_worker, *, always_armed=False):
     }
     sound_menu.update(sound_items.values())
     app.menu = [
-        status, toggle, recalibrate, sensitivity, sound_menu,
+        status, extension_status, toggle, recalibrate, sensitivity, sound_menu,
         rumps.MenuItem("Open config.json", callback=open_config),
         rumps.MenuItem("Quit", callback=quit_app),
     ]
@@ -72,6 +73,8 @@ def run_menubar(config, config_path, sounds, run_worker, *, always_armed=False):
                 toggle.title = f"{action} ({config.hotkey})"
                 toggle.set_callback(None if always_armed else send("toggle"))
                 enable_settings(True)
+            elif kind == "extension":
+                extension_status.title = f"Extension: {'connected' if value else 'not connected'}"
             elif kind == "countdown":
                 app.title = f"Look at screen {value}…"
                 status.title = app.title

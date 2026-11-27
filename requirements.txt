@@ -5,3 +5,4 @@ pynput==1.8.1
 rumps @ ./vendor/rumps-0.4.0-py3-none-any.whl ; sys_platform == "darwin"
 pyobjc-framework-cocoa==13.1 ; sys_platform == "darwin"
 pyobjc-framework-quartz==13.1 ; sys_platform == "darwin"
+websockets==15.0.1
