@@ -16,17 +16,23 @@ if __package__:
     from .hotkey import ArmHotkey
     from .menubar import run_menubar
     from .server import ExtensionServer
+    from .stats import SessionStats
     from .state import AttentionTracker, Config, State
 else:
     from alert import AudioAlert
     from hotkey import ArmHotkey
     from menubar import run_menubar
     from server import ExtensionServer
+    from stats import SessionStats
     from state import AttentionTracker, Config, State
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config.json"
 ASSETS = ROOT / "assets"
+STATS_PATH = ROOT / "stats.json"
+CALIBRATION_RETRIES = 3
+CALIBRATION_RETRY_DELAY = 2
+FACE_NOT_FOUND = "Face not found, sit in front of the camera"
 DEFAULT_MODEL = Path(__file__).with_name("face_landmarker.task")
 WINDOW_NAME = "LockIn Vision"
 CAMERA_HELP = "Camera access needed: System Settings > Privacy & Security > Camera"
@@ -61,6 +67,10 @@ def run_camera(
     landmarker, debug, config, calibrate, always_armed=False,
     *, commands=None, events=None, stop=None, sounds=(), extension_activity=None,
 ):
+    stats = SessionStats(STATS_PATH)
+    if events is not None:
+        events.put(("stats", stats.summary()))
+
     backend = cv2.CAP_AVFOUNDATION if sys.platform == "darwin" else cv2.CAP_ANY
     try:
         camera = cv2.VideoCapture(0, backend)
@@ -78,14 +88,18 @@ def run_camera(
             hotkey = ArmHotkey(config.hotkey)
         fallback_toggle = False
         started_at = time.monotonic()
-        calibration_ends_at = started_at + config.calibration_seconds
+        calibration_ends_at = None
+        retry_at = started_at
+        retries = 0
+        next_stats_update = started_at + 1
         calibration_samples = []
         last_countdown = None
         last_timestamp_ms = -1
         missing_reported = False
         extension_busy = False
         extension_arm_pending = False
-        has_baseline = not calibrate or CONFIG_PATH.is_file()
+        has_baseline = config.has_baseline
+        calibrate = calibrate or not has_baseline
         if events is not None and not calibrate:
             events.put(("mode", "IDLE"))
 
@@ -126,9 +140,16 @@ def run_camera(
                             log_transition(tracker.state, State.IDLE, "recalibrating")
                             tracker.set_armed(False, now)
                         calibrate = True
-                        calibration_ends_at = now + config.calibration_seconds
+                        calibration_ends_at = None
+                        retry_at = now
+                        retries = 0
                         calibration_samples.clear()
                         last_countdown = None
+                    elif command == "reset_stats":
+                        if stats.reset(now):
+                            events.put(("stats", stats.summary()))
+                        else:
+                            events.put(("message", "Could not reset statistics. Check Terminal."))
                     elif command in ("sensitivity", "sound"):
                         old_sensitivity, old_sound = config.sensitivity, config.alert_sound
                         if command == "sensitivity":
@@ -150,36 +171,54 @@ def run_camera(
                             events.put(("settings", (config.sensitivity, config.alert_sound)))
 
             calibration_confirmed = False
-            if calibrate and now >= calibration_ends_at:
-                calibrate = False
-                message = None
-                if not calibration_samples:
-                    message = "No face detected during calibration. Choose Recalibrate to try again."
-                    if events is None:
-                        raise RuntimeError("No face detected during calibration. Try --calibrate again.")
-                else:
-                    previous_baseline = config.baseline_yaw, config.baseline_pitch
-                    yaws, pitches = zip(*calibration_samples)
-                    config.baseline_yaw = sum(yaws) / len(yaws)
-                    config.baseline_pitch = sum(pitches) / len(pitches)
-                    try:
-                        config.save(CONFIG_PATH)
-                    except OSError as error:
-                        config.baseline_yaw, config.baseline_pitch = previous_baseline
-                        if events is None:
-                            raise
-                        message = f"Could not save calibration: {error}"
-                    else:
-                        has_baseline = True
-                        print(f"Calibration saved to {CONFIG_PATH}", flush=True)
+            if calibrate and now >= retry_at:
+                if angles is None:
+                    calibration_samples.clear()
+                    calibration_ends_at = None
+                    last_countdown = None
+                    if retries < CALIBRATION_RETRIES:
+                        retries += 1
+                        retry_at = now + CALIBRATION_RETRY_DELAY
+                        message = f"{FACE_NOT_FOUND} (retry {retries}/{CALIBRATION_RETRIES})"
+                        print(message, flush=True)
                         if events is not None:
-                            alert.cue(ASSETS / "calibrated.wav")
-                            calibration_confirmed = True
-                calibration_samples.clear()
-                if events is not None:
-                    events.put(("mode" if has_baseline else "needs_calibration", "IDLE"))
-                    if message:
+                            events.put(("calibration_retry", message))
+                    else:
+                        calibrate = False
+                        message = f"{FACE_NOT_FOUND}. Calibration failed. Choose Recalibrate to try again."
+                        if events is None:
+                            raise RuntimeError(f"{FACE_NOT_FOUND}. Calibration failed. Run with --calibrate.")
+                        events.put(("mode" if has_baseline else "needs_calibration", "IDLE"))
                         events.put(("message", message))
+                else:
+                    if calibration_ends_at is None:
+                        calibration_ends_at = now + config.calibration_seconds
+                    calibration_samples.append(angles)
+                    if now >= calibration_ends_at:
+                        calibrate = False
+                        previous_baseline = config.baseline_yaw, config.baseline_pitch
+                        yaws, pitches = zip(*calibration_samples)
+                        config.baseline_yaw = sum(yaws) / len(yaws)
+                        config.baseline_pitch = sum(pitches) / len(pitches)
+                        message = None
+                        try:
+                            config.save(CONFIG_PATH)
+                        except OSError as error:
+                            config.baseline_yaw, config.baseline_pitch = previous_baseline
+                            if events is None:
+                                raise
+                            message = f"Could not save calibration: {error}"
+                        else:
+                            has_baseline = True
+                            print(f"Calibration saved to {CONFIG_PATH}", flush=True)
+                            if events is not None:
+                                alert.cue(ASSETS / "calibrated.wav")
+                                calibration_confirmed = True
+                        calibration_samples.clear()
+                        if events is not None:
+                            events.put(("mode" if has_baseline else "needs_calibration", "IDLE"))
+                            if message:
+                                events.put(("message", message))
 
             if extension_activity is not None:
                 while True:
@@ -194,18 +233,18 @@ def run_camera(
                 toggle_requested = not toggle_requested
 
             if calibrate:
-                countdown = math.ceil(calibration_ends_at - now)
-                prompt = f"Look at your screen ({countdown})"
-                overlay = f"IDLE | {prompt}"
-                if countdown != last_countdown:
-                    print(prompt, flush=True)
-                    last_countdown = countdown
-                    if events is not None:
-                        events.put(("countdown", countdown))
-                        alert.cue(ASSETS / "tick.wav")
+                overlay = f"IDLE | {FACE_NOT_FOUND}"
+                if calibration_ends_at is not None:
+                    countdown = math.ceil(calibration_ends_at - now)
+                    prompt = f"Look at your screen ({countdown})"
+                    overlay = f"IDLE | {prompt}"
+                    if countdown != last_countdown:
+                        print(prompt, flush=True)
+                        last_countdown = countdown
+                        if events is not None:
+                            events.put(("countdown", countdown))
+                            alert.cue(ASSETS / "tick.wav")
                 alert.update(now, False)
-                if angles is not None:
-                    calibration_samples.append(angles)
             else:
                 previous_state = tracker.state
                 was_armed = tracker.armed
@@ -256,6 +295,11 @@ def run_camera(
                 mode = f"ARMED / {state.value}" if tracker.armed else "IDLE"
                 overlay = f"{mode} | {overlay}"
 
+            stats_changed = stats.update(now, tracker.state)
+            if events is not None and (stats_changed or now >= next_stats_update):
+                events.put(("stats", stats.summary()))
+                next_stats_update = now + 1
+
             if debug:
                 cv2.putText(
                     frame, overlay, (16, 32), cv2.FONT_HERSHEY_SIMPLEX,
@@ -272,16 +316,19 @@ def run_camera(
                     break
     finally:
         try:
-            camera.release()
-            if window_open:
-                cv2.destroyAllWindows()
+            if stats.current is not None:
+                stats.update(time.monotonic(), State.IDLE)
         finally:
             try:
-                alert.close()
+                camera.release()
+                if window_open:
+                    cv2.destroyAllWindows()
             finally:
-                if hotkey is not None:
-                    hotkey.close()
-
+                try:
+                    alert.close()
+                finally:
+                    if hotkey is not None:
+                        hotkey.close()
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -307,6 +354,8 @@ def main():
         except FileNotFoundError:
             config = Config()
             args.calibrate = True
+
+        args.calibrate = args.calibrate or not config.has_baseline
 
         sounds = sorted(
             path.name for path in ASSETS.iterdir()

@@ -3,6 +3,11 @@
 from queue import Empty, SimpleQueue
 from threading import Event, Thread
 
+if __package__:
+    from .login import launch_agent_path, set_launch_at_login
+else:
+    from login import launch_agent_path, set_launch_at_login
+
 
 def run_menubar(config, config_path, sounds, run_worker, *, always_armed=False):
     import rumps
@@ -23,13 +28,32 @@ def run_menubar(config, config_path, sounds, run_worker, *, always_armed=False):
         elif not NSWorkspace.sharedWorkspace().openFile_(str(config_path)):
             rumps.alert("LockIn", f"Could not open {config_path}.")
 
+    agent_path = launch_agent_path()
+
+    def toggle_login(item):
+        enabled = not agent_path.is_file()
+        try:
+            set_launch_at_login(enabled, config_path.parent / "run.sh", agent_path)
+        except OSError as error:
+            rumps.alert("LockIn", f"Could not change launch at login: {error}")
+        item.state = int(agent_path.is_file())
+
+    def reset_stats(_):
+        if rumps.alert("Reset stats?", "This clears the local session history.", cancel="Cancel"):
+            commands.put(("reset_stats", None))
+
     def quit_app(_):
         shutdown()
         rumps.quit_application()
 
     status = rumps.MenuItem("Starting camera…")
     extension_status = rumps.MenuItem("Extension: not connected")
-    toggle = rumps.MenuItem(f"Arm ({config.hotkey})")
+    pending_reason = "Starting camera" if config.has_baseline else "Calibration required"
+    toggle = rumps.MenuItem(f"Arm ({config.hotkey}) — {pending_reason}")
+    today = rumps.MenuItem("Today · 0 sessions · 0% focus · 0 alerts")
+    reset = rumps.MenuItem("Reset stats")
+    login = rumps.MenuItem("Launch at login", callback=toggle_login)
+    login.state = int(agent_path.is_file())
     recalibrate = rumps.MenuItem("Recalibrate", callback=send("calibrate"))
     sensitivity = rumps.MenuItem("Sensitivity")
     sensitivity_items = {
@@ -44,6 +68,7 @@ def run_menubar(config, config_path, sounds, run_worker, *, always_armed=False):
     sound_menu.update(sound_items.values())
     app.menu = [
         status, extension_status, toggle, recalibrate, sensitivity, sound_menu,
+        today, reset, login,
         rumps.MenuItem("Open config.json", callback=open_config),
         rumps.MenuItem("Quit", callback=quit_app),
     ]
@@ -71,25 +96,40 @@ def run_menubar(config, config_path, sounds, run_worker, *, always_armed=False):
                 status.title = value
                 action = "Arm" if value == "IDLE" else "Disarm"
                 toggle.title = f"{action} ({config.hotkey})"
+                if always_armed:
+                    toggle.title += " — Always armed"
                 toggle.set_callback(None if always_armed else send("toggle"))
                 enable_settings(True)
             elif kind == "extension":
                 extension_status.title = f"Extension: {'connected' if value else 'not connected'}"
+            elif kind == "stats":
+                today.title = value
+                reset.set_callback(reset_stats)
+            elif kind == "calibration_retry":
+                app.title = "Face not found"
+                status.title = value
+                toggle.title = f"Arm ({config.hotkey}) — Calibration in progress"
+                toggle.set_callback(None)
+                enable_settings(False)
             elif kind == "countdown":
                 app.title = f"Look at screen {value}…"
                 status.title = app.title
+                toggle.title = f"Arm ({config.hotkey}) — Calibration in progress"
                 toggle.set_callback(None)
                 enable_settings(False)
             elif kind == "settings":
                 mark_settings(*value)
             elif kind == "needs_calibration":
                 app.title = "IDLE"
+                toggle.title = f"Arm ({config.hotkey}) — Calibration required"
                 toggle.set_callback(None)
                 enable_settings(False)
             elif kind == "message":
                 status.title = value
             elif kind == "failure":
                 app.title, status.title = value
+                toggle.title = f"Arm ({config.hotkey}) — {app.title}"
+                reset.set_callback(None)
                 toggle.set_callback(None)
                 recalibrate.set_callback(None)
                 enable_settings(False)

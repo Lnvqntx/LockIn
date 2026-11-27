@@ -14,8 +14,8 @@ SENSITIVITY_SCALE = {"Low": 1.25, "Medium": 1.0, "High": 0.75}
 
 @dataclass
 class Config:
-    baseline_yaw: float = 0.0
-    baseline_pitch: float = 0.0
+    baseline_yaw: float | None = None
+    baseline_pitch: float | None = None
     yaw_threshold: float = 28.0
     pitch_threshold: float = 20.0
     missing_seconds: float = 2.0
@@ -30,6 +30,10 @@ class Config:
     extension_timeout_seconds: float = 1200.0
     sensitivity: str = "Medium"
     alert_sound: str = "alert.wav"
+
+    @property
+    def has_baseline(self):
+        return self.baseline_yaw is not None and self.baseline_pitch is not None
 
     @classmethod
     def load(cls, path: Path):
@@ -49,6 +53,8 @@ class Config:
                 valid = isinstance(value, str) and value in SENSITIVITY_SCALE
             elif field.name == "alert_sound":
                 valid = isinstance(value, str) and bool(value) and Path(value).name == value
+            elif field.name.startswith("baseline_") and value is None:
+                valid = True
             else:
                 valid = type(value) in (int, float) and math.isfinite(value)
                 if valid and not field.name.startswith("baseline_"):
@@ -59,17 +65,21 @@ class Config:
         return config
 
     def save(self, path: Path):
-        with NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=path.parent, delete=False,
-        ) as temporary:
-            temporary_path = Path(temporary.name)
-            try:
-                json.dump(asdict(self), temporary, indent=2)
-                temporary.write("\n")
-                temporary.close()
-                temporary_path.replace(path)
-            finally:
-                temporary_path.unlink(missing_ok=True)
+        write_json(path, asdict(self))
+
+
+def write_json(path, value):
+    with NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=path.parent, delete=False,
+    ) as temporary:
+        temporary_path = Path(temporary.name)
+        try:
+            json.dump(value, temporary, indent=2)
+            temporary.write("\n")
+            temporary.close()
+            temporary_path.replace(path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
 
 
 class State(Enum):

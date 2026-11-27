@@ -1,17 +1,3 @@
-// Site-specific generation controls. Update these selectors and accessible labels when sites change.
-const SITE_CONFIG = {
-  "claude.ai": {
-    selectors: ['button[aria-label="Stop response"]'],
-    label: /^stop (?:response|generating|generation|streaming)$/i,
-  },
-  "chatgpt.com": {
-    selectors: ['button[data-testid="stop-button"]', 'button[aria-label*="Stop"]'],
-    label: /^stop(?: (?:response|generating|generation|streaming))?$/i,
-    ignoreLabel: /recording|reading|sharing|voice/i,
-  },
-};
-SITE_CONFIG["chat.openai.com"] = SITE_CONFIG["chatgpt.com"];
-
 const site = SITE_CONFIG[location.hostname];
 let lastBusy;
 let lastUrl;

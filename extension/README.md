@@ -1,7 +1,7 @@
 # LockIn Chrome extension
 
-Chrome 116 or later is required. The extension is plain JavaScript and runs
-directly from this directory.
+Chromium 116 or later is required (Chrome, Arc, Edge, or Brave). Safari is unsupported.
+The extension is plain JavaScript and runs directly from this directory.
 
 ## Install
 
@@ -9,7 +9,7 @@ directly from this directory.
    bar mode, or `.venv/bin/python -m daemon.vision --debug` for the video preview.
 2. Open `chrome://extensions` and turn on **Developer mode**.
 3. Click **Load unpacked** and select this repository's `extension/` directory.
-4. Reload any already-open Claude or ChatGPT tabs so the content script loads.
+4. Reload any already-open Claude, ChatGPT, or Gemini tabs so the content script loads.
 5. Open the LockIn toolbar popup. It should show **Connected**. The default
    port is **8765**. If you change `websocket_port` in the daemon's
    `config.json`, restart the daemon and save the same port in the popup.
@@ -27,9 +27,12 @@ reads or transfers conversation text.
 - **Connected but generation isn't detected** usually means the site changed
   its Stop button. While a response generates, use Chrome DevTools to inspect
   that button's attributes. Update the matching site's selectors or
-  accessible-label pattern in the `SITE_CONFIG` object at the top of
-  [content.js](content.js). Prefer a stable `data-testid` or `aria-label`.
+  accessible-label pattern in the `SITE_CONFIG` object in [sites.js](sites.js).
+  Prefer a stable `data-testid` or `aria-label`.
   Reload LockIn on `chrome://extensions` and then reload the affected tab.
 - If another busy tab is still listed, the daemon stays armed until that tab
   goes idle too. A manual disarm suppresses automation until a new group of
   busy tabs starts.
+
+The selector presets for Claude, ChatGPT (both hostnames), and Gemini are
+fixture-tested. Their live signed-in pages remain unverified.
